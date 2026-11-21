@@ -4,12 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file=../../.env --include ../../packages/shared/dist src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "check-types": "tsc --noEmit",
-    "db:generate": "prisma generate",
-    "dev": "tsx watch --env-file=../../.env --include ../../packages/shared/dist src/index.ts"
+    "db:generate": "prisma generate"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
