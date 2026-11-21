@@ -13,7 +13,7 @@ export default async function Home() {
         <p>api: unreachable</p>
       ) : (
         <>
-          <p>api: {health.status}</p>
+          <p>{`api: ${health.status}`}</p>
           <ul>
             {Object.entries(health.dependencies).map(([name, dep]) => (
               <li key={name}>
