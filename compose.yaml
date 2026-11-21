@@ -28,15 +28,67 @@ services:
       timeout: 3s
       retries: 10
 
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # the controller listener is internal only and is not published
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094
+      # HOST is for the api running on the host, DOCKER is for containers on the compose network
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:${KAFKA_PORT:-9092},DOCKER://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,DOCKER:PLAINTEXT
+      # brokers talk to each other over DOCKER, HOST is advertised on a port that only exists on the host
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      # topics are created by kafka-init, a typo in a topic name should fail instead of creating one
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # single node dev cluster, production uses replication 3 with min isr 2
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+    healthcheck:
+      # bootstrap on the DOCKER listener, the HOST listener advertises a port that only exists on the host
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9093 --list > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:4.4.0
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # one shot, --if-not-exists makes reruns safe. events keep 7 days, the dlq keeps 30 so a human can look at it
+    command:
+      - sh
+      - -c
+      - >
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists
+        --topic webhook.events --partitions 6 --replication-factor 1 --config retention.ms=604800000
+        && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists
+        --topic webhook.events.dlq --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    # a fixed name so the processor can run the same image without building it a second time
+    image: web-hooks-api
     environment:
       API_PORT: 3001
       # inside the compose network postgres and redis use their container ports
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
+      # api does not depend on kafka, registration must keep working while the broker is down
+      KAFKA_BROKERS: kafka:9093
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:?set INGEST_API_TOKEN in .env}
     ports:
       - "127.0.0.1:3001:3001"
     depends_on:
@@ -52,6 +104,26 @@ services:
       retries: 10
       start_period: 10s
 
+  processor:
+    # same image as the api, built once under the api service
+    image: web-hooks-api
+    pull_policy: never
+    command: ["node", "dist/processor.js"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      KAFKA_BROKERS: kafka:9093
+      # the shared config class validates these even though the processor never uses them
+      REDIS_URL: redis://redis:6379
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:?set INGEST_API_TOKEN in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
   web:
     build:
       context: .
@@ -63,6 +135,10 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      # not for ordering. without a dependent, up --wait counts the exited one-shot as a failure,
+      # or as a pass, depending on whether it finished yet. api must not depend on kafka
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s

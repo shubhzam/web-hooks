@@ -11,6 +11,7 @@ export const healthResponseSchema = z.object({
   dependencies: z.object({
     postgres: dependencyCheckSchema,
     redis: dependencyCheckSchema,
+    kafka: dependencyCheckSchema,
   }),
 });
 

@@ -1,6 +1,7 @@
 import type { DependencyCheck, HealthResponse } from "@repo/shared/health";
 import { config } from "../config.js";
 import { prisma } from "./prisma.js";
+import { checkBroker } from "./kafka.js";
 import { redis } from "./redis.js";
 
 // runs one probe with a timeout, never throws, and logs the real error server side
@@ -29,16 +30,17 @@ async function timedCheck(
 }
 
 export async function checkReadiness(): Promise<HealthResponse> {
-  const [postgres, redisCheck] = await Promise.all([
+  const [postgres, redisCheck, kafka] = await Promise.all([
     timedCheck("postgres", true, () => prisma.$queryRaw`SELECT 1`),
     timedCheck("redis", false, () => redis.ping()),
+    timedCheck("kafka", false, () => checkBroker(config.healthTimeoutMs)),
   ]);
 
-  // only required dependencies decide readiness, redis is reported but optional
-  const ready = [postgres, redisCheck].every((c) => !c.required || c.status === "up");
+  // only required dependencies decide readiness, redis and kafka are reported but optional
+  const ready = [postgres, redisCheck, kafka].every((c) => !c.required || c.status === "up");
 
   return {
     status: ready ? "ok" : "unavailable",
-    dependencies: { postgres, redis: redisCheck },
+    dependencies: { postgres, redis: redisCheck, kafka },
   };
 }
