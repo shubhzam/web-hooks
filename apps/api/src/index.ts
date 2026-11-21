@@ -1,9 +1,23 @@
 import express from "express";
+import { config } from "./config.js";
+import { prisma } from "./lib/prisma.js";
+import { redis } from "./lib/redis.js";
+import { healthRouter } from "./routes/health.js";
 
-// placeholder server, step 5 replaces this with the health routes
 const app = express();
-const port = Number(process.env.API_PORT ?? 3001);
+app.use(healthRouter);
 
-app.listen(port, () => {
-  console.log(`api listening on ${port}`);
+const server = app.listen(config.port, () => {
+  console.log(`api listening on ${config.port}`);
 });
+
+// close connections cleanly on ctrl-c and docker stop
+async function shutdown(signal: string) {
+  console.log(`${signal} received, shutting down`);
+  server.close();
+  await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
+  process.exit(0);
+}
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
