@@ -124,6 +124,36 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  delivery-worker:
+    # same image as the api, built once under the api service
+    image: web-hooks-api
+    pull_policy: never
+    command: ["node", "dist/delivery-worker.js"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # the mock receiver is the only host allowed over http, this is for dev and tests
+      DELIVERY_ALLOW_HOSTS: mock-receiver
+      # interpolated so a shell override works for manual tests
+      DELIVERY_LEASE_MS: ${DELIVERY_LEASE_MS:-60000}
+      DELIVERY_REAPER_INTERVAL_MS: ${DELIVERY_REAPER_INTERVAL_MS:-15000}
+      # the shared config class validates these even though the worker never uses them
+      KAFKA_BROKERS: kafka:9093
+      REDIS_URL: redis://redis:6379
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:?set INGEST_API_TOKEN in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mock-receiver:
+    # a fake customer server for the delivery smoke scripts, only started with --profile test
+    profiles: ["test"]
+    image: web-hooks-api
+    pull_policy: never
+    command: ["node", "dist/dev/mock-receiver.js"]
+    ports:
+      - "127.0.0.1:${MOCK_RECEIVER_PORT:-4000}:4000"
+
   web:
     build:
       context: .

@@ -12,6 +12,7 @@ import { SmokeFailure, check, kafkaClient, postEvent, sleep, startTailConsumer, 
 const DB_WAIT_MS = 15000;
 const DLQ_WAIT_MS = 15000;
 const BULK_WAIT_MS = 60000;
+const SETTLE_WAIT_MS = 60000;
 const DUPLICATE_WAIT_MS = 3000;
 const DLQ_WARMUP_ATTEMPTS = 5;
 const DLQ_WARMUP_WAIT_MS = 3000;
@@ -48,7 +49,8 @@ async function seedEndpoint(organizationId: string, name: string, seed: Endpoint
     data: {
       id,
       organizationId,
-      url: `https://smoke.example.com/${name}/${id}`,
+      // a private address, the delivery worker refuses it without any dns or network traffic
+      url: `https://10.0.0.5/smoke/${name}/${id}`,
       signingSecret: "whsec_smoke_not_a_real_secret",
       status: seed.status ?? "active",
       ...(seed.deletedAt ? { deletedAt: seed.deletedAt } : {}),
@@ -78,7 +80,7 @@ function eventRowCount(eventId: string): Promise<number> {
 }
 
 function deliveriesFor(eventId: string) {
-  return prisma.delivery.findMany({ where: { eventId }, select: { endpointId: true, status: true, attemptCount: true } });
+  return prisma.delivery.findMany({ where: { eventId }, select: { endpointId: true } });
 }
 
 async function waitForEvent(eventId: string): Promise<boolean> {
@@ -102,10 +104,10 @@ async function checkMatching(): Promise<{ organizationId: string; endpoints: Rec
   check("the event row appears within 15s", await waitForEvent(event.eventId));
   check("exactly 1 events row", (await eventRowCount(event.eventId)) === 1);
   const deliveries = await deliveriesFor(event.eventId);
+  // any status: the delivery worker may already have picked them up
   check("exactly 2 deliveries", deliveries.length === 2, `found ${deliveries.length}`);
   const targets = deliveries.map((delivery) => delivery.endpointId).sort();
   check("the deliveries are for endpoints A and B", JSON.stringify(targets) === JSON.stringify([endpoints.A, endpoints.B].sort()));
-  check("both deliveries are pending with attempt_count 0", deliveries.every((d) => d.status === "pending" && d.attemptCount === 0));
   check("C (other event type) got no delivery", !targets.includes(endpoints.C));
   check("D (disabled) got no delivery", !targets.includes(endpoints.D));
   check("E (soft deleted) got no delivery", !targets.includes(endpoints.E));
@@ -188,7 +190,7 @@ async function seedBulkOrganization(): Promise<string> {
     data: ids.map((id) => ({
       id,
       organizationId,
-      url: `https://smoke.example.com/bulk/${id}`,
+      url: `https://10.0.0.5/smoke/bulk/${id}`,
       signingSecret: "whsec_smoke_not_a_real_secret",
     })),
   });
@@ -224,6 +226,13 @@ async function cleanup(): Promise<void> {
   if (seededOrganizationIds.length === 0) return;
   const organizationId = { in: seededOrganizationIds };
   try {
+    // the delivery worker consumes these rows, so let it finish before they are deleted
+    await waitUntil(
+      async () => (await prisma.delivery.count({ where: { organizationId, status: { in: ["pending", "in_progress"] } } })) === 0,
+      SETTLE_WAIT_MS,
+      500,
+    );
+    await prisma.deliveryAttempt.deleteMany({ where: { delivery: { organizationId } } });
     await prisma.delivery.deleteMany({ where: { organizationId } });
     await prisma.event.deleteMany({ where: { organizationId } });
     await prisma.webhookEndpointEventType.deleteMany({ where: { endpoint: { organizationId } } });

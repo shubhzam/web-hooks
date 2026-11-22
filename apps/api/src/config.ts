@@ -29,6 +29,25 @@ const envSchema = z.object({
   PROCESSOR_BATCH_SIZE: z.coerce.number().int().positive().default(100),
   PROCESSOR_BATCH_WAIT_MS: z.coerce.number().int().positive().default(200),
   PROCESSOR_RETRY_MAX_MS: z.coerce.number().int().positive().default(30000),
+  DELIVERY_CONCURRENCY: z.coerce.number().int().positive().default(50),
+  DELIVERY_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  DELIVERY_LEASE_MS: z.coerce.number().int().positive().default(60000),
+  DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  DELIVERY_REAPER_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
+  DELIVERY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),
+  DELIVERY_SHUTDOWN_MS: z.coerce.number().int().positive().default(20000),
+  // host port of the mock receiver, only the delivery smoke script reads it
+  MOCK_RECEIVER_PORT: z.coerce.number().int().positive().default(4000),
+  // exact hostnames that may use http and skip the address check, for dev and tests only
+  DELIVERY_ALLOW_HOSTS: z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((host) => host.trim().toLowerCase())
+        .filter((host) => host !== ""),
+    ),
 });
 
 class Config {
@@ -48,6 +67,15 @@ class Config {
   readonly processorBatchSize: number;
   readonly processorBatchWaitMs: number;
   readonly processorRetryMaxMs: number;
+  readonly deliveryConcurrency: number;
+  readonly deliveryTimeoutMs: number;
+  readonly deliveryLeaseMs: number;
+  readonly deliveryMaxAttempts: number;
+  readonly deliveryReaperIntervalMs: number;
+  readonly deliveryPollIntervalMs: number;
+  readonly deliveryShutdownMs: number;
+  readonly deliveryAllowHosts: string[];
+  readonly mockReceiverPort: number;
 
   // fixed settings, these are not read from the environment
   readonly apiKeyPrefix = "whk_live_";
@@ -66,6 +94,16 @@ class Config {
   // rows per deliveries insert, keeps one statement far below the bind parameter limit
   readonly deliveryChunkSize = 1000;
   readonly processorRetryInitialMs = 1000;
+  readonly deliveryUserAgent = "webhook-service/1";
+  // the response is never stored, so reading more than this would only waste time and memory
+  readonly deliveryResponseCapBytes = 64 * 1024;
+  // most rows one claim takes, so one slow poll cannot hoard work from the other workers
+  readonly deliveryClaimBatchSize = 50;
+  readonly deliveryReapBatchSize = 100;
+  // pause after a database error in the main loop before it tries again
+  readonly deliveryErrorPauseMs = 1000;
+  readonly deliveryTxTimeoutMs = 10000;
+  readonly deliveryTxMaxWaitMs = 10000;
 
   constructor(env: NodeJS.ProcessEnv) {
     const result = envSchema.safeParse(env);
@@ -88,6 +126,15 @@ class Config {
     this.processorBatchSize = result.data.PROCESSOR_BATCH_SIZE;
     this.processorBatchWaitMs = result.data.PROCESSOR_BATCH_WAIT_MS;
     this.processorRetryMaxMs = result.data.PROCESSOR_RETRY_MAX_MS;
+    this.deliveryConcurrency = result.data.DELIVERY_CONCURRENCY;
+    this.deliveryTimeoutMs = result.data.DELIVERY_TIMEOUT_MS;
+    this.deliveryLeaseMs = result.data.DELIVERY_LEASE_MS;
+    this.deliveryMaxAttempts = result.data.DELIVERY_MAX_ATTEMPTS;
+    this.deliveryReaperIntervalMs = result.data.DELIVERY_REAPER_INTERVAL_MS;
+    this.deliveryPollIntervalMs = result.data.DELIVERY_POLL_INTERVAL_MS;
+    this.deliveryShutdownMs = result.data.DELIVERY_SHUTDOWN_MS;
+    this.deliveryAllowHosts = result.data.DELIVERY_ALLOW_HOSTS;
+    this.mockReceiverPort = result.data.MOCK_RECEIVER_PORT;
   }
 }
 
