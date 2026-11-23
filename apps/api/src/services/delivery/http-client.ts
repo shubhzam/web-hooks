@@ -16,6 +16,8 @@ export interface DeliveryRequest {
 export interface DeliveryResponse {
   status: number;
   durationMs: number;
+  // the raw Retry-After header value, parsing it is left to the retry logic
+  retryAfter: string | null;
 }
 
 export interface HttpClientOptions {
@@ -83,6 +85,11 @@ function assertAllowedTarget(url: URL, allowHosts: ReadonlySet<string>): void {
   if (isIP(host) !== 0 && !allowed && isBlockedAddress(host)) throw new DeliveryFailure("blocked_address");
 }
 
+// a repeated header arrives as a list, the first value is the one that counts
+function headerValue(value: string | string[] | undefined): string | null {
+  return (Array.isArray(value) ? value[0] : value) ?? null;
+}
+
 // reads up to the cap and throws the rest away. a failure here is ignored, the status is already known
 async function discardBody(body: Dispatcher.ResponseData["body"], capBytes: number): Promise<void> {
   let read = 0;
@@ -122,7 +129,11 @@ export function createHttpClient(options: HttpClientOptions): DeliveryHttpClient
         body: delivery.body,
       });
       await discardBody(response.body, options.responseCapBytes);
-      return { status: response.statusCode, durationMs: Math.round(performance.now() - startedAt) };
+      return {
+        status: response.statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        retryAfter: headerValue(response.headers["retry-after"]),
+      };
     } catch (err) {
       throw new DeliveryFailure(describeFailure(err), { cause: err });
     }

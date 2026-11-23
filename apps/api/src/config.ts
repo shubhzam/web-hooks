@@ -1,6 +1,18 @@
 import * as z from "zod";
 
-const envSchema = z.object({
+// "5000,30000" becomes [5000, 30000], anything that is not a positive whole number fails validation
+const delayListSchema = z
+  .string()
+  .transform((value) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item !== "")
+      .map(Number),
+  )
+  .pipe(z.array(z.number().int().positive()).min(1));
+
+const baseSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(3001),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -32,7 +44,20 @@ const envSchema = z.object({
   DELIVERY_CONCURRENCY: z.coerce.number().int().positive().default(50),
   DELIVERY_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   DELIVERY_LEASE_MS: z.coerce.number().int().positive().default(60000),
-  DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
+  // wait before attempt n + 1 is the nth entry, before jitter
+  DELIVERY_RETRY_DELAYS_MS: delayListSchema.prefault("5000,30000,120000,600000,1800000,7200000,21600000"),
+  // 0.2 means each delay is multiplied by a random factor between 0.8 and 1.2
+  DELIVERY_RETRY_JITTER: z.coerce.number().min(0).max(1).default(0.2),
+  // a Retry-After above this is cut down to it
+  DELIVERY_RETRY_AFTER_MAX_MS: z.coerce.number().int().positive().default(21600000),
+  // a delivery older than this since its cycle started is given up without a request
+  DELIVERY_MAX_AGE_MS: z.coerce.number().int().positive().default(86400000),
+  CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(20),
+  CIRCUIT_COOLDOWN_MS: z.coerce.number().int().positive().default(300000),
+  CIRCUIT_COUNTER_TTL_S: z.coerce.number().int().positive().default(3600),
+  // paused deliveries are spread over this window after the pause so they do not all go out together
+  CIRCUIT_RELEASE_SPREAD_MS: z.coerce.number().int().positive().default(150000),
   DELIVERY_REAPER_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
   DELIVERY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),
   DELIVERY_SHUTDOWN_MS: z.coerce.number().int().positive().default(20000),
@@ -50,7 +75,20 @@ const envSchema = z.object({
     ),
 });
 
-class Config {
+// the last attempt has no delay after it, so n attempts need n - 1 delays
+const envSchema = baseSchema.superRefine((env, ctx) => {
+  const needed = env.DELIVERY_MAX_ATTEMPTS - 1;
+  if (env.DELIVERY_RETRY_DELAYS_MS.length < needed) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["DELIVERY_RETRY_DELAYS_MS"],
+      message: `DELIVERY_RETRY_DELAYS_MS has ${env.DELIVERY_RETRY_DELAYS_MS.length} delays but DELIVERY_MAX_ATTEMPTS=${env.DELIVERY_MAX_ATTEMPTS} needs at least ${needed}`,
+    });
+  }
+});
+
+// exported so the retry check can build one with its own environment
+export class Config {
   readonly port: number;
   readonly databaseUrl: string;
   readonly redisUrl: string;
@@ -71,6 +109,14 @@ class Config {
   readonly deliveryTimeoutMs: number;
   readonly deliveryLeaseMs: number;
   readonly deliveryMaxAttempts: number;
+  readonly deliveryRetryDelaysMs: number[];
+  readonly deliveryRetryJitter: number;
+  readonly deliveryRetryAfterMaxMs: number;
+  readonly deliveryMaxAgeMs: number;
+  readonly circuitFailureThreshold: number;
+  readonly circuitCooldownMs: number;
+  readonly circuitCounterTtlS: number;
+  readonly circuitReleaseSpreadMs: number;
   readonly deliveryReaperIntervalMs: number;
   readonly deliveryPollIntervalMs: number;
   readonly deliveryShutdownMs: number;
@@ -104,6 +150,14 @@ class Config {
   readonly deliveryErrorPauseMs = 1000;
   readonly deliveryTxTimeoutMs = 10000;
   readonly deliveryTxMaxWaitMs = 10000;
+  // a redis call that takes longer than this counts as a failure, so a hung redis cannot hold a delivery
+  readonly circuitRedisTimeoutMs = 1000;
+  // a redis problem is logged at most this often, the breaker would otherwise log on every delivery
+  readonly circuitRedisLogIntervalMs = 60000;
+  // how long the worker waits for redis to close on shutdown
+  readonly circuitRedisCloseMs = 2000;
+  // the window of the endpoint stats, the shared schema labels it 24h
+  readonly deliveryStatsWindowMs = 24 * 60 * 60 * 1000;
 
   constructor(env: NodeJS.ProcessEnv) {
     const result = envSchema.safeParse(env);
@@ -130,6 +184,14 @@ class Config {
     this.deliveryTimeoutMs = result.data.DELIVERY_TIMEOUT_MS;
     this.deliveryLeaseMs = result.data.DELIVERY_LEASE_MS;
     this.deliveryMaxAttempts = result.data.DELIVERY_MAX_ATTEMPTS;
+    this.deliveryRetryDelaysMs = result.data.DELIVERY_RETRY_DELAYS_MS;
+    this.deliveryRetryJitter = result.data.DELIVERY_RETRY_JITTER;
+    this.deliveryRetryAfterMaxMs = result.data.DELIVERY_RETRY_AFTER_MAX_MS;
+    this.deliveryMaxAgeMs = result.data.DELIVERY_MAX_AGE_MS;
+    this.circuitFailureThreshold = result.data.CIRCUIT_FAILURE_THRESHOLD;
+    this.circuitCooldownMs = result.data.CIRCUIT_COOLDOWN_MS;
+    this.circuitCounterTtlS = result.data.CIRCUIT_COUNTER_TTL_S;
+    this.circuitReleaseSpreadMs = result.data.CIRCUIT_RELEASE_SPREAD_MS;
     this.deliveryReaperIntervalMs = result.data.DELIVERY_REAPER_INTERVAL_MS;
     this.deliveryPollIntervalMs = result.data.DELIVERY_POLL_INTERVAL_MS;
     this.deliveryShutdownMs = result.data.DELIVERY_SHUTDOWN_MS;

@@ -16,6 +16,10 @@ interface LoggedRequest {
 }
 
 const received: LoggedRequest[] = [];
+// hits per /flaky id, so each id has its own run of failures
+const flakyHits = new Map<string, number>();
+// the /switch route answers 500 while this is false
+let switchUp = false;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -56,6 +60,48 @@ function handleSlow(res: ServerResponse, url: URL): void {
   res.on("close", () => clearTimeout(timer));
 }
 
+function statusFrom(raw: string | null, fallback: number): number {
+  const status = Number(raw);
+  return Number.isInteger(status) && status >= 200 && status <= 599 ? status : fallback;
+}
+
+// the first fail hits for an id return the status, with a Retry-After when one was asked for.
+// every later hit returns 200
+function handleFlaky(res: ServerResponse, url: URL): void {
+  const id = url.searchParams.get("id") ?? "";
+  const hits = (flakyHits.get(id) ?? 0) + 1;
+  flakyHits.set(id, hits);
+  if (hits > Number(url.searchParams.get("fail") ?? 0)) {
+    reply(res, 200);
+    return;
+  }
+  const retryAfter = url.searchParams.get("retryAfter");
+  reply(res, statusFrom(url.searchParams.get("status"), 500), retryAfter === null ? {} : { "retry-after": retryAfter });
+}
+
+function handleControl(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  const mode = url.searchParams.get("mode");
+  if (req.method !== "POST" || url.pathname !== "/control/switch" || (mode !== "up" && mode !== "down")) {
+    reply(res, 400);
+    return;
+  }
+  switchUp = mode === "up";
+  reply(res, 204);
+}
+
+// everything else a delivery can be sent to
+function route(res: ServerResponse, url: URL): void {
+  if (url.pathname === "/fail") reply(res, 500);
+  else if (url.pathname === "/gone") reply(res, 410);
+  else if (url.pathname.startsWith("/status/")) reply(res, statusFrom(url.pathname.slice("/status/".length), 404));
+  else if (url.pathname === "/switch") reply(res, switchUp ? 200 : 500);
+  else if (url.pathname === "/flaky") handleFlaky(res, url);
+  else if (url.pathname === "/slow") handleSlow(res, url);
+  else if (url.pathname === "/redirect") reply(res, 302, { location: "/target" });
+  else if (["/ok", "/target", "/inactive"].includes(url.pathname)) reply(res, 200);
+  else reply(res, 404);
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://mock-receiver");
   if (url.pathname === "/received") {
@@ -73,11 +119,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     body: await readBody(req),
     time: new Date().toISOString(),
   });
-  if (url.pathname === "/fail") reply(res, 500);
-  else if (url.pathname === "/slow") handleSlow(res, url);
-  else if (url.pathname === "/redirect") reply(res, 302, { location: "/target" });
-  else if (["/ok", "/target", "/inactive"].includes(url.pathname)) reply(res, 200);
-  else reply(res, 404);
+  if (url.pathname.startsWith("/control/")) handleControl(req, res, url);
+  else route(res, url);
 }
 
 createServer((req, res) => void handle(req, res)).listen(LISTEN_PORT, "0.0.0.0", () => {

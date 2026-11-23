@@ -1,33 +1,21 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import * as z from "zod";
+import { createHmac } from "node:crypto";
 import { uuidv7 } from "uuidv7";
-import { config } from "../config.js";
 import { prisma } from "../lib/prisma.js";
+import { MOCK_FROM_SCRIPT, MOCK_FROM_WORKER, clearReceived, fetchReceived, newSecret, removeOrganizations, seedEvent } from "./delivery-kit.js";
 import { SmokeFailure, check, waitUntil } from "./smoke-kit.js";
 
 // usage: pnpm --filter api smoke:delivery [-- --load]
 // needs postgres, a running delivery worker and the mock receiver (compose --profile test).
 // it seeds deliveries straight into postgres, so no kafka is involved. prints one line per check
-// and exits non-zero on the first failure. everything it seeds is removed again at the end
+// and exits non-zero on the first failure. everything it seeds is removed again at the end.
+// failed deliveries are retried, so the failing targets are only checked on their first attempt
 
-const MOCK_FROM_SCRIPT = `http://localhost:${config.mockReceiverPort}`;
-// the worker runs in a container, so it reaches the mock by its service name
-const MOCK_FROM_WORKER = "http://mock-receiver:4000";
 const DELIVERY_WAIT_MS = 30000;
 const LOAD_WAIT_MS = 60000;
 const LOAD_DELIVERIES = 500;
 const SIGNATURE_WINDOW_SECONDS = 60;
 const SLOW_MIN_MS = 9000;
 const SLOW_MAX_MS = 13000;
-
-const receivedSchema = z.array(
-  z.object({
-    path: z.string(),
-    query: z.string(),
-    headers: z.object({ "webhook-id": z.string(), "webhook-timestamp": z.string(), "webhook-signature": z.string() }),
-    body: z.string(),
-  }),
-);
 
 interface Target {
   name: string;
@@ -55,31 +43,11 @@ const TARGETS: Target[] = [
   { name: "private", url: "https://10.0.0.5/x" },
 ];
 
-function newSecret(): string {
-  return `whsec_${randomBytes(32).toString("base64")}`;
-}
-
 async function seedOrganization(label: string): Promise<string> {
   const id = uuidv7();
   await prisma.organization.create({ data: { id, name: `smoke delivery ${label} ${Date.now()}` } });
   seededOrganizationIds.push(id);
   return id;
-}
-
-async function seedEvent(organizationId: string): Promise<{ eventId: string; payload: Seeded["payload"] }> {
-  const eventId = randomUUID();
-  const payload = { invoiceId: "inv_delivery_smoke", amountCents: 4200 };
-  await prisma.event.create({
-    data: {
-      eventId,
-      organizationId,
-      type: "invoice.paid",
-      payload,
-      occurredAt: new Date(Date.now() - 5000),
-      receivedAt: new Date(),
-    },
-  });
-  return { eventId, payload };
 }
 
 async function seedTargets(): Promise<Seeded> {
@@ -105,9 +73,10 @@ async function seedTargets(): Promise<Seeded> {
   return { organizationId, eventId, payload, byName };
 }
 
-async function fetchReceived(path: string): Promise<z.infer<typeof receivedSchema>> {
-  const res = await fetch(`${MOCK_FROM_SCRIPT}/received?path=${encodeURIComponent(path)}`);
-  return receivedSchema.parse(await res.json());
+// every delivery has its first attempt written. the failing ones go on retrying afterwards, so
+// this is the most that can be asked of them
+async function waitForFirstAttempts(organizationId: string, total: number, timeoutMs: number): Promise<boolean> {
+  return waitUntil(async () => (await prisma.deliveryAttempt.count({ where: { delivery: { organizationId }, attemptNumber: 1 } })) === total, timeoutMs, 250);
 }
 
 async function waitForAll(organizationId: string, total: number, timeoutMs: number): Promise<boolean> {
@@ -124,7 +93,10 @@ async function waitForAll(organizationId: string, total: number, timeoutMs: numb
 async function loadDelivery(seeded: Seeded, name: string) {
   const ids = seeded.byName.get(name);
   if (!ids) throw new Error(`no seeded target ${name}`);
-  const delivery = await prisma.delivery.findUniqueOrThrow({ where: { id: ids.deliveryId }, include: { attempts: true } });
+  const delivery = await prisma.delivery.findUniqueOrThrow({
+    where: { id: ids.deliveryId },
+    include: { attempts: { orderBy: { attemptNumber: "asc" } } },
+  });
   return { ...ids, delivery, attempt: delivery.attempts[0] };
 }
 
@@ -165,15 +137,21 @@ async function checkExhausted(seeded: Seeded, name: string, error: string, statu
   check(`${name}: response_status is ${status}`, (attempt?.responseStatus ?? null) === status, `got ${attempt?.responseStatus}`);
 }
 
+async function checkFirstAttempt(seeded: Seeded, name: string, error: string, status: number | null): Promise<void> {
+  const { attempt } = await loadDelivery(seeded, name);
+  check(`${name}: the first attempt row has error ${error}`, attempt?.attemptNumber === 1 && attempt.error === error, `got ${attempt?.error}`);
+  check(`${name}: the first attempt response_status is ${status}`, (attempt?.responseStatus ?? null) === status, `got ${attempt?.responseStatus}`);
+}
+
 async function checkSlow(seeded: Seeded): Promise<void> {
-  await checkExhausted(seeded, "slow", "timeout", null);
-  const { delivery, attempt } = await loadDelivery(seeded, "slow");
-  const tookMs = (delivery.completedAt?.getTime() ?? 0) - (attempt?.startedAt.getTime() ?? 0);
-  check("/slow: finished between 9s and 13s after the claim", tookMs >= SLOW_MIN_MS && tookMs <= SLOW_MAX_MS, `took ${tookMs}ms`);
+  await checkFirstAttempt(seeded, "slow", "timeout", null);
+  const { attempt } = await loadDelivery(seeded, "slow");
+  const tookMs = attempt?.durationMs ?? 0;
+  check("/slow: the first attempt gave up between 9s and 13s", tookMs >= SLOW_MIN_MS && tookMs <= SLOW_MAX_MS, `took ${tookMs}ms`);
 }
 
 async function checkRedirect(seeded: Seeded): Promise<void> {
-  await checkExhausted(seeded, "redirect", "http_302", 302);
+  await checkFirstAttempt(seeded, "redirect", "http_302", 302);
   check("/redirect: the mock logged zero hits on /target", (await fetchReceived("/target")).length === 0);
 }
 
@@ -189,14 +167,14 @@ async function checkInactive(seeded: Seeded): Promise<void> {
 }
 
 async function checkTargets(): Promise<void> {
-  await fetch(`${MOCK_FROM_SCRIPT}/received`, { method: "DELETE" });
+  await clearReceived();
   const seeded = await seedTargets();
   check(
-    "every delivery reaches a final status within 30s",
-    await waitForAll(seeded.organizationId, TARGETS.length, DELIVERY_WAIT_MS),
+    "every delivery has a first attempt within 30s",
+    await waitForFirstAttempts(seeded.organizationId, TARGETS.length, DELIVERY_WAIT_MS),
   );
   await checkOk(seeded);
-  await checkExhausted(seeded, "fail", "http_500", 500);
+  await checkFirstAttempt(seeded, "fail", "http_500", 500);
   await checkSlow(seeded);
   await checkRedirect(seeded);
   await checkBlocked(seeded);
@@ -223,7 +201,7 @@ async function seedLoad(): Promise<string> {
 }
 
 async function checkLoad(): Promise<void> {
-  await fetch(`${MOCK_FROM_SCRIPT}/received`, { method: "DELETE" });
+  await clearReceived();
   const organizationId = await seedLoad();
   const startedAt = Date.now();
   const done = await waitForAll(organizationId, LOAD_DELIVERIES, LOAD_WAIT_MS);
@@ -240,20 +218,6 @@ async function checkLoad(): Promise<void> {
   check(`every ?d= tag arrived exactly once`, distinctTags.size === LOAD_DELIVERIES, `${distinctTags.size} distinct`);
 }
 
-async function cleanup(): Promise<void> {
-  if (seededOrganizationIds.length === 0) return;
-  const organizationId = { in: seededOrganizationIds };
-  try {
-    await prisma.deliveryAttempt.deleteMany({ where: { delivery: { organizationId } } });
-    await prisma.delivery.deleteMany({ where: { organizationId } });
-    await prisma.event.deleteMany({ where: { organizationId } });
-    await prisma.webhookEndpoint.deleteMany({ where: { organizationId } });
-    await prisma.organization.deleteMany({ where: { id: organizationId } });
-  } catch (err) {
-    console.error(`smoke cleanup failed: ${err instanceof Error ? err.name : "unknown error"}`);
-  }
-}
-
 async function main(): Promise<void> {
   try {
     const mock = await fetch(`${MOCK_FROM_SCRIPT}/received`).catch(() => null);
@@ -267,7 +231,7 @@ async function main(): Promise<void> {
     }
     process.exitCode = 1;
   } finally {
-    await cleanup();
+    await removeOrganizations(seededOrganizationIds);
     await prisma.$disconnect();
   }
 }

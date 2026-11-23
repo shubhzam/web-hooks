@@ -7,6 +7,7 @@ import { requireApiKey } from "./middleware/auth.js";
 import { requireIngestToken } from "./middleware/ingest-auth.js";
 import { errorHandler, routeNotFound } from "./middleware/error.js";
 import { eventsRouter } from "./routes/events.js";
+import { deliveriesRouter } from "./routes/deliveries.js";
 import { healthRouter } from "./routes/health.js";
 import { webhookEndpointsRouter } from "./routes/webhook-endpoints.js";
 
@@ -17,7 +18,7 @@ app.use(healthRouter);
 app.use("/v1/events", requireIngestToken, eventsRouter);
 
 // auth runs before the body is parsed, so anonymous callers never make us read a large body
-app.use("/v1", requireApiKey, express.json({ limit: config.jsonBodyLimit }), webhookEndpointsRouter);
+app.use("/v1", requireApiKey, express.json({ limit: config.jsonBodyLimit }), webhookEndpointsRouter, deliveriesRouter);
 
 // these two stay last, express only treats a handler as an error handler by position and arity
 app.use(routeNotFound);

@@ -10,6 +10,7 @@ import {
 } from "@repo/shared/webhook-endpoint";
 import { notFound } from "../lib/errors.js";
 import { organizationIdOf } from "../middleware/auth.js";
+import { getEndpointStats } from "../services/deliveries.js";
 import {
   createEndpoint,
   deleteEndpoint,
@@ -63,6 +64,11 @@ webhookEndpointsRouter.get("/webhook-endpoints", async (req, res) => {
 webhookEndpointsRouter.get("/webhook-endpoints/:id", async (req, res) => {
   const row = await getEndpoint(organizationIdOf(req), endpointIdFrom(req.params.id));
   res.json(toResponse(row));
+});
+
+// delivery counts of the last 24 hours, loaded apart from the endpoint because counting can be slow
+webhookEndpointsRouter.get("/webhook-endpoints/:id/stats", async (req, res) => {
+  res.json(await getEndpointStats(organizationIdOf(req), endpointIdFrom(req.params.id)));
 });
 
 webhookEndpointsRouter.patch("/webhook-endpoints/:id", async (req, res) => {

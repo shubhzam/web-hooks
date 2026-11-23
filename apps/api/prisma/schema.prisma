@@ -60,6 +60,8 @@ model WebhookEndpoint {
   signingSecret  String         @map("signing_secret")
   status         EndpointStatus @default(active)
   deletedAt      DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  // set by the circuit breaker, deliveries to this endpoint wait until it has passed
+  pausedUntil    DateTime?      @map("paused_until") @db.Timestamptz(3)
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -125,14 +127,21 @@ model Delivery {
   // set while a worker holds the delivery, the reaper recovers rows whose lease ran out
   leaseExpiresAt DateTime?      @map("lease_expires_at") @db.Timestamptz(3)
   completedAt    DateTime?      @map("completed_at") @db.Timestamptz(3)
+  // attempt_count when the last replay happened, attempt_count minus this is the position in the retry schedule
+  replayBase     Int            @default(0) @map("replay_base")
+  // start of the current retry cycle, reset by a replay, the max age is measured from here
+  cycleStartedAt DateTime       @default(now()) @map("cycle_started_at") @db.Timestamptz(3)
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  event    Event             @relation(fields: [eventId], references: [eventId])
+  event    Event            @relation(fields: [eventId], references: [eventId])
   endpoint WebhookEndpoint   @relation(fields: [endpointId], references: [id])
   attempts DeliveryAttempt[]
 
   // the conflict target that makes replays and duplicate events safe
   @@unique([eventId, endpointId])
+  // the dashboard lists newest first with id < cursor, ids are uuidv7 so id order is creation order
+  @@index([organizationId, id])
+  @@index([endpointId, id])
   @@map("deliveries")
 }
 

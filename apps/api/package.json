@@ -21,7 +21,11 @@
     "delivery:dev": "tsx watch --env-file=../../.env --include ../../packages/shared/dist src/delivery-worker.ts",
     "start:delivery": "node dist/delivery-worker.js",
     "check:ssrf": "tsx --env-file=../../.env src/scripts/check-ssrf.ts",
-    "smoke:delivery": "tsx --env-file=../../.env src/scripts/smoke-delivery.ts"
+    "smoke:delivery": "tsx --env-file=../../.env src/scripts/smoke-delivery.ts",
+    "check:retry": "tsx --env-file=../../.env src/scripts/check-retry.ts",
+    "smoke:retries": "tsx --env-file=../../.env src/scripts/smoke-retries.ts",
+    "check:dashboard": "tsx --env-file=../../.env src/scripts/check-dashboard.ts",
+    "smoke:dashboard-api": "tsx --env-file=../../.env src/scripts/smoke-dashboard-api.ts"
   },
   "dependencies": {
     "@confluentinc/kafka-javascript": "^1.11.0",

@@ -137,12 +137,22 @@ services:
       # interpolated so a shell override works for manual tests
       DELIVERY_LEASE_MS: ${DELIVERY_LEASE_MS:-60000}
       DELIVERY_REAPER_INTERVAL_MS: ${DELIVERY_REAPER_INTERVAL_MS:-15000}
-      # the shared config class validates these even though the worker never uses them
-      KAFKA_BROKERS: kafka:9093
+      # retry and circuit breaker settings, the defaults match the config class
+      DELIVERY_RETRY_DELAYS_MS: ${DELIVERY_RETRY_DELAYS_MS:-5000,30000,120000,600000,1800000,7200000,21600000}
+      DELIVERY_MAX_ATTEMPTS: ${DELIVERY_MAX_ATTEMPTS:-8}
+      DELIVERY_MAX_AGE_MS: ${DELIVERY_MAX_AGE_MS:-86400000}
+      CIRCUIT_FAILURE_THRESHOLD: ${CIRCUIT_FAILURE_THRESHOLD:-20}
+      CIRCUIT_COOLDOWN_MS: ${CIRCUIT_COOLDOWN_MS:-300000}
+      CIRCUIT_RELEASE_SPREAD_MS: ${CIRCUIT_RELEASE_SPREAD_MS:-150000}
+      # the breaker counters live in redis. kafka brokers and the ingest token are only here
+      # because the shared config class validates them
       REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9093
       INGEST_API_TOKEN: ${INGEST_API_TOKEN:?set INGEST_API_TOKEN in .env}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   mock-receiver:

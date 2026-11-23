@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { config } from "./config.js";
 import { describeError } from "./lib/describe-error.js";
 import { prisma } from "./lib/prisma.js";
+import { closeBreaker } from "./services/delivery/breaker.js";
 import { deliver, type DeliveryJob } from "./services/delivery/deliver.js";
 import { deliveryClient } from "./services/delivery/http-client.js";
 import { claimDeliveries, loadContext, reapExpired, type ClaimedDelivery } from "./services/delivery/repository.js";
@@ -87,6 +88,7 @@ async function shutdown(signal: string): Promise<void> {
   const drained = await Promise.race([Promise.allSettled([...inFlight]).then(() => true), deadline]);
   if (!drained) console.warn(`shutdown deadline reached with ${inFlight.size} deliveries still in flight`);
   await Promise.race([prisma.$disconnect().catch(() => undefined), sleep(2000)]);
+  await closeBreaker();
   console.log("delivery worker stopped");
   process.exit(0);
 }

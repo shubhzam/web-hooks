@@ -4,6 +4,8 @@ export type ErrorCode =
   | "not_found"
   | "payload_too_large"
   | "endpoint_url_exists"
+  | "delivery_not_replayable"
+  | "endpoint_inactive"
   | "internal_error"
   | "broker_unavailable";
 
@@ -13,6 +15,8 @@ const statusByCode: Record<ErrorCode, number> = {
   not_found: 404,
   payload_too_large: 413,
   endpoint_url_exists: 409,
+  delivery_not_replayable: 409,
+  endpoint_inactive: 409,
   internal_error: 500,
   broker_unavailable: 503,
 };
