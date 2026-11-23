@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { connection } from "next/server";
 import { fetchHealth } from "../lib/health";
 
@@ -9,6 +10,11 @@ export default async function Home() {
   return (
     <main>
       <h1>web-hooks</h1>
+      <p>
+        <Link href="/endpoints" prefetch={false}>
+          endpoints
+        </Link>
+      </p>
       {health === null ? (
         <p>api: unreachable</p>
       ) : (

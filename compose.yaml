@@ -170,6 +170,8 @@ services:
       dockerfile: apps/web/Dockerfile
     environment:
       API_URL: http://api:3001
+      # the session cookie is only marked secure when the app is served over https
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

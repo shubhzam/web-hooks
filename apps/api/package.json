@@ -25,7 +25,8 @@
     "check:retry": "tsx --env-file=../../.env src/scripts/check-retry.ts",
     "smoke:retries": "tsx --env-file=../../.env src/scripts/smoke-retries.ts",
     "check:dashboard": "tsx --env-file=../../.env src/scripts/check-dashboard.ts",
-    "smoke:dashboard-api": "tsx --env-file=../../.env src/scripts/smoke-dashboard-api.ts"
+    "smoke:dashboard-api": "tsx --env-file=../../.env src/scripts/smoke-dashboard-api.ts",
+    "smoke:web": "tsx --env-file=../../.env src/scripts/smoke-web.ts"
   },
   "dependencies": {
     "@confluentinc/kafka-javascript": "^1.11.0",
