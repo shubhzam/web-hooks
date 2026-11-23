@@ -19,6 +19,28 @@ flowchart LR
   workers -->|"record attempts"| pg
   workers -->|"signed POST"| cust["Customer endpoint"]
   workers -->|"failure counters"| redis[("Redis: circuit breaker")]
+
+  classDef producer fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+  classDef api fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d
+  classDef broker fill:#ffedd5,stroke:#c2410c,stroke-width:2px,color:#7c2d12
+  classDef deadletter fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#7f1d1d
+  classDef processor fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#4c1d95
+  classDef database fill:#cffafe,stroke:#0e7490,stroke-width:2px,color:#164e63
+  classDef worker fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#831843
+  classDef customer fill:#e5e7eb,stroke:#374151,stroke-width:2px,color:#111827
+  classDef cache fill:#fef9c3,stroke:#a16207,stroke-width:2px,color:#713f12
+
+  class app producer
+  class ingest api
+  class topic broker
+  class dlq deadletter
+  class proc processor
+  class pg database
+  class workers worker
+  class cust customer
+  class redis cache
+  style kafka fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4,color:#7c2d12
+  linkStyle 3 stroke:#b91c1c,stroke-width:2px
 ```
 
 - An internal app posts an event to the ingest API, which publishes it to Kafka and answers 202 only after the broker acknowledges.
@@ -53,6 +75,16 @@ stateDiagram-v2
   in_progress --> exhausted: terminal result or no attempts left
   exhausted --> pending: replay
   succeeded --> [*]
+
+  classDef waiting fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#78350f
+  classDef sending fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+  classDef delivered fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d
+  classDef failed fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#7f1d1d
+
+  class pending waiting
+  class in_progress sending
+  class succeeded delivered
+  class exhausted failed
 ```
 
 ## Key design decisions
