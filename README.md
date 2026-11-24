@@ -4,44 +4,9 @@ a reusable starter template for building reliable webhooks and connecting any ba
 
 ## How it works
 
-```mermaid
-flowchart LR
-  app["Internal app"] -->|"POST event"| ingest["Ingest API"]
-  subgraph kafka["Kafka"]
-    topic["Topic: webhook.events"]
-    dlq["Dead letter topic: webhook.events.dlq"]
-  end
-  ingest -->|"publish and ack"| topic
-  topic --> proc["Event processor"]
-  proc -.->|"invalid messages"| dlq
-  proc -->|"store"| pg[("PostgreSQL: events and deliveries")]
-  pg -->|"claim pending"| workers["Delivery workers"]
-  workers -->|"record attempts"| pg
-  workers -->|"signed POST"| cust["Customer endpoint"]
-  workers -->|"failure counters"| redis[("Redis: circuit breaker")]
-
-  classDef producer fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
-  classDef api fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d
-  classDef broker fill:#ffedd5,stroke:#c2410c,stroke-width:2px,color:#7c2d12
-  classDef deadletter fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#7f1d1d
-  classDef processor fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#4c1d95
-  classDef database fill:#cffafe,stroke:#0e7490,stroke-width:2px,color:#164e63
-  classDef worker fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#831843
-  classDef customer fill:#e5e7eb,stroke:#374151,stroke-width:2px,color:#111827
-  classDef cache fill:#fef9c3,stroke:#a16207,stroke-width:2px,color:#713f12
-
-  class app producer
-  class ingest api
-  class topic broker
-  class dlq deadletter
-  class proc processor
-  class pg database
-  class workers worker
-  class cust customer
-  class redis cache
-  style kafka fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4,color:#7c2d12
-  linkStyle 3 stroke:#b91c1c,stroke-width:2px
-```
+<p align="center">
+  <img src="apps/docs/diagrams/architecture.png" width="900" alt="Architecture diagram. An internal app posts events to the ingest API, which publishes to Kafka. The event processor reads the topic, sends invalid messages to a dead letter topic and stores events and deliveries in PostgreSQL. Delivery workers claim deliveries from PostgreSQL, send signed POST requests to the customer endpoint and keep failure counters in Redis. The dashboard reads through the API.">
+</p>
 
 - An internal app posts an event to the ingest API, which publishes it to Kafka and answers 202 only after the broker acknowledges.
 - The event processor reads the topic in batches and sends invalid messages to the dead letter topic.
@@ -65,27 +30,9 @@ flowchart LR
 
 ## Delivery status
 
-```mermaid
-stateDiagram-v2
-  [*] --> pending: created by fan-out
-  pending --> in_progress: claimed by a worker
-  in_progress --> succeeded: 2xx response
-  in_progress --> pending: failed with attempts left
-  in_progress --> pending: lease expired
-  in_progress --> exhausted: terminal result or no attempts left
-  exhausted --> pending: replay
-  succeeded --> [*]
-
-  classDef waiting fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#78350f
-  classDef sending fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
-  classDef delivered fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d
-  classDef failed fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#7f1d1d
-
-  class pending waiting
-  class in_progress sending
-  class succeeded delivered
-  class exhausted failed
-```
+<p align="center">
+  <img src="apps/docs/diagrams/delivery-status.png" width="900" alt="Delivery status diagram. A new delivery is pending and becomes in_progress when a worker claims it. It becomes succeeded on a 2xx response, returns to pending after a retryable failure or an expired lease, and becomes exhausted on a terminal result or when attempts run out. Replay moves an exhausted delivery back to pending.">
+</p>
 
 ## Key design decisions
 
